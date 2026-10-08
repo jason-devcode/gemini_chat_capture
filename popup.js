@@ -1,4 +1,5 @@
 const chatContainer = document.getElementById("chat-container");
+const clearBtn = document.getElementById("clear-btn");
 
 function renderChat(history) {
   chatContainer.innerHTML = "";
@@ -30,6 +31,13 @@ function renderChat(history) {
 // Cargar historial inicial
 chrome.storage.local.get(["chatHistory"], (result) => {
   renderChat(result.chatHistory || []);
+});
+
+// Evento para limpiar el chat
+clearBtn.addEventListener("click", () => {
+  chrome.storage.local.set({ chatHistory: [] }, () => {
+    renderChat([]);
+  });
 });
 
 // Escuchar actualizaciones dinámicas

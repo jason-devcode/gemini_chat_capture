@@ -21,8 +21,14 @@
       padding: 10px 16px;
       display: flex;
       align-items: center;
-      gap: 10px;
+      justify-content: space-between;
       border-bottom: 1px solid #2a3942;
+    }
+
+    .header-info {
+      display: flex;
+      align-items: center;
+      gap: 10px;
     }
 
     header h3 {
@@ -37,6 +43,22 @@
       height: 8px;
       background-color: #00a884;
       border-radius: 50%;
+    }
+
+    .clear-btn {
+      background: transparent;
+      border: none;
+      color: #8696a0;
+      cursor: pointer;
+      padding: 4px 8px;
+      border-radius: 4px;
+      font-size: 12px;
+      transition: background-color 0.2s, color 0.2s;
+    }
+
+    .clear-btn:hover {
+      background-color: #2a3942;
+      color: #ef4444;
     }
 
     #chat-container {
@@ -90,8 +112,11 @@
 </head>
 <body>
   <header>
-    <div class="status-dot"></div>
-    <h3>Gemini Live Stream</h3>
+    <div class="header-info">
+      <div class="status-dot"></div>
+      <h3>Gemini Live Stream</h3>
+    </div>
+    <button id="clear-btn" class="clear-btn" title="Limpiar chat">Limpiar</button>
   </header>
   <div id="chat-container"></div>
   <script src="popup.js"></script>
