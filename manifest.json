@@ -1,0 +1,25 @@
+{
+  "manifest_version": 3,
+  "name": "Gemini Live Chat",
+  "version": "1.1",
+  "description": "Captura la conversación en vivo de Gemini estilo WhatsApp en una ventana emergente persistente.",
+  "permissions": [
+    "storage",
+    "activeTab"
+  ],
+  "host_permissions": [
+    "https://gemini.google.com/*"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "content_scripts": [
+    {
+      "matches": ["https://gemini.google.com/*"],
+      "js": ["content.js"]
+    }
+  ],
+  "action": {
+    "default_title": "Abrir Gemini Live Chat"
+  }
+}

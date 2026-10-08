@@ -1,0 +1,99 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8">
+  <style>
+    body {
+      width: 100%;
+      height: 100vh;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+      margin: 0;
+      padding: 0;
+      background-color: #0b141a;
+      color: #e9edef;
+      display: flex;
+      flex-direction: column;
+      box-sizing: border-box;
+    }
+
+    header {
+      background-color: #202c33;
+      padding: 10px 16px;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      border-bottom: 1px solid #2a3942;
+    }
+
+    header h3 {
+      margin: 0;
+      font-size: 15px;
+      color: #e9edef;
+      font-weight: 500;
+    }
+
+    .status-dot {
+      width: 8px;
+      height: 8px;
+      background-color: #00a884;
+      border-radius: 50%;
+    }
+
+    #chat-container {
+      flex: 1;
+      padding: 12px;
+      overflow-y: auto;
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+      background-image: radial-gradient(#1f2c34 1px, transparent 0);
+      background-size: 16px 16px;
+    }
+
+    .message {
+      max-width: 80%;
+      padding: 8px 12px;
+      border-radius: 8px;
+      font-size: 13.5px;
+      line-height: 1.4;
+      white-space: pre-wrap;
+      word-break: break-word;
+      box-shadow: 0 1px 0.5px rgba(11,20,26,0.13);
+    }
+
+    .message.user {
+      align-self: flex-end;
+      background-color: #005c4b;
+      color: #e9edef;
+      border-top-right-radius: 0;
+    }
+
+    .message.gemini {
+      align-self: flex-start;
+      background-color: #202c33;
+      color: #e9edef;
+      border-top-left-radius: 0;
+    }
+
+    .sender-label {
+      font-size: 10px;
+      font-weight: bold;
+      margin-bottom: 3px;
+      color: #8696a0;
+    }
+
+    .message.user .sender-label {
+      color: #53bdeb;
+      text-align: right;
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <div class="status-dot"></div>
+    <h3>Gemini Live Stream</h3>
+  </header>
+  <div id="chat-container"></div>
+  <script src="popup.js"></script>
+</body>
+</html>
