@@ -1,5 +1,13 @@
 const chatContainer = document.getElementById("chat-container");
 const clearBtn = document.getElementById("clear-btn");
+const statusDot = document.querySelector(".status-dot");
+
+function updateWsStatus(isConnected) {
+  if (statusDot) {
+    statusDot.style.backgroundColor = isConnected ? "#00a884" : "#ef4444";
+    statusDot.title = isConnected ? "WebSocket Conectado" : "WebSocket Desconectado";
+  }
+}
 
 function renderChat(history) {
   chatContainer.innerHTML = "";
@@ -28,21 +36,26 @@ function renderChat(history) {
   chatContainer.scrollTop = chatContainer.scrollHeight;
 }
 
-// Cargar historial inicial
+// Cargar historial inicial y consultar estado WS
 chrome.storage.local.get(["chatHistory"], (result) => {
   renderChat(result.chatHistory || []);
 });
 
-// Evento para limpiar el chat
+chrome.runtime.sendMessage({ type: "GET_WS_STATUS" }, (response) => {
+  if (response) updateWsStatus(response.connected);
+});
+
 clearBtn.addEventListener("click", () => {
   chrome.storage.local.set({ chatHistory: [] }, () => {
     renderChat([]);
   });
 });
 
-// Escuchar actualizaciones dinámicas
 chrome.runtime.onMessage.addListener((message) => {
   if (message.type === "POPUP_STREAM_CHAT") {
     renderChat(message.history);
+  }
+  if (message.type === "WS_STATUS_CHANGE") {
+    updateWsStatus(message.connected);
   }
 });

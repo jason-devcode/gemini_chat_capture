@@ -1,14 +1,14 @@
 let lastHistoryJSON = "";
+let geminiDebounceTimer = null;
+const STREAM_TIMEOUT_MS = 1500;
 
-/**
- * CAPA DE LIMPIEZA MULTI-GUARD
- * Combina múltiples estrategias para garantizar que solo se devuelva
- * la versión final completa de la consulta, ignorando borradores o duplicados.
- */
+function isExtensionContextValid() {
+  return typeof chrome !== "undefined" && chrome.runtime && !!chrome.runtime.id;
+}
+
 function cleanUserText(rawText) {
   if (!rawText) return "";
 
-  // Guard 0: Limpieza base de espacios y prefijos de accesibilidad
   let text = rawText
     .replace(/^(Tú dijiste|Tú dijiste:)\s*/gi, "")
     .replace(/\s+/g, " ")
@@ -16,32 +16,23 @@ function cleanUserText(rawText) {
 
   if (!text) return "";
 
-  // GUARD 1: Mitades exactas (Ej: "Hola mundo Hola mundo")
   const halfLen = Math.floor(text.length / 2);
   for (let offset = -3; offset <= 3; offset++) {
     const len = halfLen + offset;
     if (len > 3 && len < text.length) {
       const part1 = text.substring(0, len).trim();
       const part2 = text.substring(len).trim();
-      if (part1 === part2) {
-        return part1;
-      }
+      if (part1 === part2) return part1;
     }
   }
 
-  // GUARD 2: Búsqueda por Muestra Inicial (Substring Sample)
-  // Toma los primeros 15-20 caracteres y busca si vuelven a aparecer más adelante
   const sampleLength = Math.min(20, Math.floor(text.length / 3));
   if (sampleLength >= 5) {
     const sample = text.substring(0, sampleLength);
     const secondIndex = text.indexOf(sample, sampleLength);
-    if (secondIndex !== -1) {
-      return text.substring(secondIndex).trim();
-    }
+    if (secondIndex !== -1) return text.substring(secondIndex).trim();
   }
 
-  // GUARD 3: Comparación de N-Gramas de palabras (Word Blocks)
-  // Útil si hay ligeras variaciones de caracteres al inicio del borrador
   const words = text.split(" ");
   if (words.length >= 6) {
     const wordBlockSize = Math.min(4, Math.floor(words.length / 2));
@@ -51,13 +42,10 @@ function cleanUserText(rawText) {
 
     if (matchIndex !== -1) {
       const cutCharIndex = text.indexOf(wordSample, wordBlockSize);
-      if (cutCharIndex !== -1) {
-        return text.substring(cutCharIndex).trim();
-      }
+      if (cutCharIndex !== -1) return text.substring(cutCharIndex).trim();
     }
   }
 
-  // GUARD 4: Manejo de Elipsis / Truncamiento ("texto corto... texto completo")
   if (text.includes("...")) {
     const parts = text.split(/\.\.\.\s*/);
     text = parts.reduce((longest, current) => 
@@ -68,15 +56,9 @@ function cleanUserText(rawText) {
   return text;
 }
 
-/**
- * CAPA DE EXTRACCIÓN DOM (Guard de Selección de Nodo)
- */
 function extractUserPrompt(userNode) {
-  // Intentar leer directo desde contenedores específicos si existen en esta versión de la UI
   const queryTextEl = userNode.querySelector('.query-text, [class*="query-content"]');
-  if (queryTextEl) {
-    return cleanUserText(queryTextEl.textContent);
-  }
+  if (queryTextEl) return cleanUserText(queryTextEl.textContent);
 
   const paragraphs = userNode.querySelectorAll('p');
   if (paragraphs.length > 0) {
@@ -85,15 +67,11 @@ function extractUserPrompt(userNode) {
     if (cleaned) return cleaned;
   }
 
-  // Fallback a texto general del nodo pasado por la tubería de Guards
-  const rawText = userNode.innerText || userNode.textContent || "";
-  return cleanUserText(rawText);
+  return cleanUserText(userNode.innerText || userNode.textContent || "");
 }
 
 function extractGeminiResponse(modelNode) {
   const clone = modelNode.cloneNode(true);
-
-  // Eliminar botones, iconos y elementos auxiliares de interfaz
   const unwanted = clone.querySelectorAll('button, mat-icon, .action-buttons, .edit-container, h2, .screenreader-only');
   unwanted.forEach(el => el.remove());
 
@@ -105,7 +83,6 @@ function buildChatHistory() {
   const userNodes = Array.from(document.querySelectorAll('user-query'));
   const modelNodes = Array.from(document.querySelectorAll('model-response'));
 
-  // Ordenar cronológicamente por su posición en el DOM
   const allNodes = [...userNodes, ...modelNodes].sort((a, b) => {
     return (a.compareDocumentPosition(b) & Node.DOCUMENT_POSITION_FOLLOWING) ? -1 : 1;
   });
@@ -127,25 +104,86 @@ function buildChatHistory() {
   return history;
 }
 
-function safeSendMessage(history) {
-  if (typeof chrome === "undefined" || !chrome.runtime || !chrome.runtime.id) {
-    return;
+function safeSendMessage(message) {
+  if (!isExtensionContextValid()) return;
+  try {
+    chrome.runtime.sendMessage(message).catch(() => {});
+  } catch (e) {}
+}
+
+function isGeminiGenerating(lastModelNode) {
+  if (!lastModelNode) return false;
+
+  const stopButton = document.querySelector('button[aria-label*="Stop"], button[aria-label*="Detener"], button[aria-label*="stop"]');
+  if (stopButton) return true;
+
+  if (
+    lastModelNode.classList.contains("streaming") ||
+    lastModelNode.classList.contains("generating") ||
+    lastModelNode.getAttribute("aria-busy") === "true"
+  ) {
+    return true;
   }
 
-  chrome.runtime.sendMessage({
-    type: "GEMINI_CHAT_UPDATE",
-    history: history
-  }).catch(() => {});
+  const spinner = lastModelNode.querySelector('.mat-mdc-progress-spinner, [role="progressbar"], .sparkle-loader');
+  if (spinner) return true;
+
+  return false;
+}
+
+function checkAndProcessGeminiCompletion() {
+  const modelNodes = document.querySelectorAll('model-response');
+  if (modelNodes.length === 0) return;
+
+  const lastModelNode = modelNodes[modelNodes.length - 1];
+
+  // Si este nodo ya fue marcado como enviado a Python, no hacemos nada
+  if (lastModelNode.dataset.wsSent === "true") return;
+
+  if (geminiDebounceTimer) clearTimeout(geminiDebounceTimer);
+
+  geminiDebounceTimer = setTimeout(() => {
+    if (!isExtensionContextValid()) return;
+
+    // Verificar si sigue generando
+    if (isGeminiGenerating(lastModelNode)) {
+      checkAndProcessGeminiCompletion();
+      return;
+    }
+
+    // Verificar que el nodo tenga texto válido y no haya sido enviado aún
+    const text = extractGeminiResponse(lastModelNode);
+    if (text && lastModelNode.dataset.wsSent !== "true") {
+      // Marcar el nodo en el DOM inmediatamente para evitar envíos concurrentes/duplicados
+      lastModelNode.dataset.wsSent = "true";
+
+      safeSendMessage({
+        type: "GEMINI_FINAL_RESPONSE",
+        sender: "gemini",
+        text: text,
+        timestamp: new Date().toISOString()
+      });
+    }
+  }, STREAM_TIMEOUT_MS);
 }
 
 const observer = new MutationObserver(() => {
+  if (!isExtensionContextValid()) {
+    observer.disconnect();
+    if (geminiDebounceTimer) clearTimeout(geminiDebounceTimer);
+    return;
+  }
+
   const history = buildChatHistory();
   const currentJSON = JSON.stringify(history);
 
   if (currentJSON !== lastHistoryJSON && history.length > 0) {
     lastHistoryJSON = currentJSON;
-    safeSendMessage(history);
+    safeSendMessage({ type: "GEMINI_CHAT_UPDATE", history: history });
   }
+
+  // Evaluar si la última respuesta de Gemini ha finalizado
+  checkAndProcessGeminiCompletion();
 });
 
 observer.observe(document.body, {
