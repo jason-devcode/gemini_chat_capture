@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "Gemini Live Chat",
-  "version": "1.1",
-  "description": "Captura la conversación en vivo de Gemini estilo WhatsApp en una ventana emergente persistente.",
+  "version": "1.2",
+  "description": "Captura la conversación en vivo de Gemini en una ventana emergente.",
   "permissions": [
     "storage",
     "activeTab"
