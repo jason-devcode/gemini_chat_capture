@@ -4,7 +4,7 @@ from datetime import datetime
 
 import websockets
 
-HOST = "localhost"
+HOST = "0.0.0.0"
 PORT = 8765
 
 

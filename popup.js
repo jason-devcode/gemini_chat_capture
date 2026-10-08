@@ -1,6 +1,8 @@
 const chatContainer = document.getElementById("chat-container");
 const clearBtn = document.getElementById("clear-btn");
 const statusDot = document.querySelector(".status-dot");
+const chatInput = document.getElementById("chat-input");
+const sendBtn = document.getElementById("send-btn");
 
 function updateWsStatus(isConnected) {
   if (statusDot) {
@@ -35,6 +37,49 @@ function renderChat(history) {
 
   chatContainer.scrollTop = chatContainer.scrollHeight;
 }
+
+function sendMessageToTab(tabId, text) {
+  // Asegurarnos de que el content script está inyectado antes de enviar mensaje
+  chrome.tabs.sendMessage(tabId, { type: "SEND_GEMINI_PROMPT", text: text }, (response) => {
+    if (chrome.runtime.lastError) {
+      // Si el listener no responde, re-inyectamos content.js y reintentamos
+      chrome.scripting.executeScript({
+        target: { tabId: tabId },
+        files: ["content.js"]
+      }, () => {
+        setTimeout(() => {
+          chrome.tabs.sendMessage(tabId, { type: "SEND_GEMINI_PROMPT", text: text });
+        }, 300);
+      });
+    }
+  });
+  chatInput.value = "";
+}
+
+function handleSendMessage() {
+  const text = chatInput.value.trim();
+  if (!text) return;
+
+  chrome.tabs.query({ url: "https://gemini.google.com/*" }, (tabs) => {
+    if (tabs && tabs.length > 0) {
+      // Buscar la pestaña activa o usar la primera encontrada
+      const activeGeminiTab = tabs.find(t => t.active) || tabs[0];
+      sendMessageToTab(activeGeminiTab.id, text);
+    } else {
+      alert("No se encontró ninguna pestaña abierta con Gemini (https://gemini.google.com).");
+    }
+  });
+}
+
+// Escuchadores
+sendBtn.addEventListener("click", handleSendMessage);
+
+chatInput.addEventListener("keydown", (event) => {
+  if (event.key === "Enter") {
+    event.preventDefault();
+    handleSendMessage();
+  }
+});
 
 // Cargar historial inicial y consultar estado WS
 chrome.storage.local.get(["chatHistory"], (result) => {

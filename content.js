@@ -10,7 +10,7 @@ function cleanUserText(rawText) {
   if (!rawText) return "";
 
   let text = rawText
-    .replace(/^(Tú dijiste|Tú dijiste:)\s*/gi, "")
+    .replace(/^(Tú dijiste|Tú dijiste:|Has dicho)\s*/gi, "")
     .replace(/\s+/g, " ")
     .trim();
 
@@ -26,38 +26,11 @@ function cleanUserText(rawText) {
     }
   }
 
-  const sampleLength = Math.min(20, Math.floor(text.length / 3));
-  if (sampleLength >= 5) {
-    const sample = text.substring(0, sampleLength);
-    const secondIndex = text.indexOf(sample, sampleLength);
-    if (secondIndex !== -1) return text.substring(secondIndex).trim();
-  }
-
-  const words = text.split(" ");
-  if (words.length >= 6) {
-    const wordBlockSize = Math.min(4, Math.floor(words.length / 2));
-    const wordSample = words.slice(0, wordBlockSize).join(" ");
-    const remainingText = words.slice(wordBlockSize).join(" ");
-    const matchIndex = remainingText.toLowerCase().indexOf(wordSample.toLowerCase());
-
-    if (matchIndex !== -1) {
-      const cutCharIndex = text.indexOf(wordSample, wordBlockSize);
-      if (cutCharIndex !== -1) return text.substring(cutCharIndex).trim();
-    }
-  }
-
-  if (text.includes("...")) {
-    const parts = text.split(/\.\.\.\s*/);
-    text = parts.reduce((longest, current) => 
-      current.trim().length > longest.trim().length ? current.trim() : longest
-    , "");
-  }
-
   return text;
 }
 
 function extractUserPrompt(userNode) {
-  const queryTextEl = userNode.querySelector('.query-text, [class*="query-content"]');
+  const queryTextEl = userNode.querySelector('.query-text, .query-text-line, [class*="query-content"]');
   if (queryTextEl) return cleanUserText(queryTextEl.textContent);
 
   const paragraphs = userNode.querySelectorAll('p');
@@ -72,7 +45,7 @@ function extractUserPrompt(userNode) {
 
 function extractGeminiResponse(modelNode) {
   const clone = modelNode.cloneNode(true);
-  const unwanted = clone.querySelectorAll('button, mat-icon, .action-buttons, .edit-container, h2, .screenreader-only');
+  const unwanted = clone.querySelectorAll('button, mat-icon, .action-buttons, .edit-container, h2, h5, h6, .screenreader-only, .cdk-visually-hidden');
   unwanted.forEach(el => el.remove());
 
   return (clone.innerText || clone.textContent || "").trim();
@@ -137,7 +110,6 @@ function checkAndProcessGeminiCompletion() {
 
   const lastModelNode = modelNodes[modelNodes.length - 1];
 
-  // Si este nodo ya fue marcado como enviado a Python, no hacemos nada
   if (lastModelNode.dataset.wsSent === "true") return;
 
   if (geminiDebounceTimer) clearTimeout(geminiDebounceTimer);
@@ -145,16 +117,13 @@ function checkAndProcessGeminiCompletion() {
   geminiDebounceTimer = setTimeout(() => {
     if (!isExtensionContextValid()) return;
 
-    // Verificar si sigue generando
     if (isGeminiGenerating(lastModelNode)) {
       checkAndProcessGeminiCompletion();
       return;
     }
 
-    // Verificar que el nodo tenga texto válido y no haya sido enviado aún
     const text = extractGeminiResponse(lastModelNode);
     if (text && lastModelNode.dataset.wsSent !== "true") {
-      // Marcar el nodo en el DOM inmediatamente para evitar envíos concurrentes/duplicados
       lastModelNode.dataset.wsSent = "true";
 
       safeSendMessage({
@@ -166,6 +135,39 @@ function checkAndProcessGeminiCompletion() {
     }
   }, STREAM_TIMEOUT_MS);
 }
+
+// Inyección del prompt en el editor de Gemini
+chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+  if (message.type === "SEND_GEMINI_PROMPT" && message.text) {
+    const inputArea = document.querySelector('.ql-editor, rich-textarea div[contenteditable="true"], div[contenteditable="true"], textarea');
+    
+    if (inputArea) {
+      inputArea.focus();
+      if (inputArea.tagName.toLowerCase() === 'textarea') {
+        inputArea.value = message.text;
+      } else {
+        inputArea.innerText = message.text;
+      }
+      
+      inputArea.dispatchEvent(new Event('input', { bubbles: true }));
+      inputArea.dispatchEvent(new Event('change', { bubbles: true }));
+
+      setTimeout(() => {
+        const sendBtn = document.querySelector('button[aria-label*="Enviar"], button[aria-label*="Send"], button.send-button');
+        if (sendBtn) {
+          sendBtn.click();
+        } else {
+          inputArea.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', keyCode: 13, bubbles: true }));
+        }
+      }, 150);
+
+      if (sendResponse) sendResponse({ status: "success" });
+    } else {
+      if (sendResponse) sendResponse({ status: "input_not_found" });
+    }
+  }
+  return true;
+});
 
 const observer = new MutationObserver(() => {
   if (!isExtensionContextValid()) {
@@ -182,7 +184,6 @@ const observer = new MutationObserver(() => {
     safeSendMessage({ type: "GEMINI_CHAT_UPDATE", history: history });
   }
 
-  // Evaluar si la última respuesta de Gemini ha finalizado
   checkAndProcessGeminiCompletion();
 });
 

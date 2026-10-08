@@ -108,6 +108,47 @@
       color: #53bdeb;
       text-align: right;
     }
+
+    /* Estilos del área de envío */
+    .input-container {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 10px 12px;
+      background-color: #202c33;
+      border-top: 1px solid #2a3942;
+    }
+
+    #chat-input {
+      flex: 1;
+      background-color: #2a3942;
+      color: #e9edef;
+      border: none;
+      border-radius: 8px;
+      padding: 8px 12px;
+      font-size: 13.5px;
+      outline: none;
+    }
+
+    #chat-input::placeholder {
+      color: #8696a0;
+    }
+
+    #send-btn {
+      background-color: #00a884;
+      color: #111b21;
+      border: none;
+      border-radius: 8px;
+      padding: 8px 14px;
+      font-size: 13.5px;
+      font-weight: 600;
+      cursor: pointer;
+      transition: background-color 0.2s;
+    }
+
+    #send-btn:hover {
+      background-color: #029071;
+    }
   </style>
 </head>
 <body>
@@ -119,6 +160,12 @@
     <button id="clear-btn" class="clear-btn" title="Limpiar chat">Limpiar</button>
   </header>
   <div id="chat-container"></div>
+  
+  <div class="input-container">
+    <input type="text" id="chat-input" placeholder="Escribe un mensaje..." autocomplete="off" />
+    <button id="send-btn">Enviar</button>
+  </div>
+
   <script src="popup.js"></script>
 </body>
 </html>
