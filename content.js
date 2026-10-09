@@ -143,17 +143,20 @@ function checkAndProcessGeminiCompletion() {
   }, STREAM_TIMEOUT_MS);
 }
 
-// Inyección del prompt en el editor de Gemini
+// Inyección del prompt en el editor de Gemini (modificado para soportar multilínea y comandos)
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message.type === "SEND_GEMINI_PROMPT" && message.text) {
     const inputArea = document.querySelector('.ql-editor, rich-textarea div[contenteditable="true"], div[contenteditable="true"], textarea');
     
     if (inputArea) {
       inputArea.focus();
+      
       if (inputArea.tagName.toLowerCase() === 'textarea') {
         inputArea.value = message.text;
       } else {
-        inputArea.innerText = message.text;
+        // Formatear saltos de línea para elementos contenteditable[cite: 3]
+        const formattedHTML = message.text.replace(/\n/g, '<br>');
+        inputArea.innerHTML = `<p>${formattedHTML}</p>`;
       }
       
       inputArea.dispatchEvent(new Event('input', { bubbles: true }));
@@ -166,7 +169,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         } else {
           inputArea.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', keyCode: 13, bubbles: true }));
         }
-      }, 150);
+      }, 200);
 
       if (sendResponse) sendResponse({ status: "success" });
     } else {

@@ -25,6 +25,9 @@ const MESSAGE_TYPES = Object.freeze({
   UPDATE_WS_CONFIG: "UPDATE_WS_CONFIG",
   WS_STATUS_CHANGE: "WS_STATUS_CHANGE",
   POPUP_STREAM_CHAT: "POPUP_STREAM_CHAT",
+  CLI_PROMPT: "CLI_PROMPT",             // <- NUEVO
+  COMMAND_RESULT: "COMMAND_RESULT",     // <- NUEVO
+  SEND_GEMINI_PROMPT: "SEND_GEMINI_PROMPT", // <- NUEVO
 });
 
 /**
@@ -344,9 +347,25 @@ class WebSocketManager {
         data_type: typeof event.data,
       });
 
-      // El procesamiento de mensajes entrantes del servidor
-      // puede añadirse aquí si el protocolo lo requiere.
+      // --- NUEVO: Procesamiento de mensajes entrantes del servidor ---
+      try {
+        const data = JSON.parse(event.data);
+
+        // 1. Manejo de Prompts libres desde la CLI del servidor
+        if (data.type === MESSAGE_TYPES.CLI_PROMPT && data.text) {
+          this.forward_to_gemini_tab(data.text);
+        }
+
+        // 2. Manejo de Resultados de Comandos ejecutados por el agente
+        if (data.type === MESSAGE_TYPES.COMMAND_RESULT) {
+          const formattedText = `[Resultado del Comando: ${data.command}]\nEstado: ${data.status}\nSalida:\n${data.output}`;
+          this.forward_to_gemini_tab(formattedText);
+        }
+      } catch (err) {
+        Logger.error("WebSocketManager", "Error parseando mensaje entrante del servidor", err);
+      }
     });
+
 
     socket.addEventListener("error", () => {
       if (!this.is_current_socket(socket, generation)) {
@@ -403,6 +422,21 @@ class WebSocketManager {
 
     this.notify_status();
     this.schedule_reconnect();
+  }
+
+  // --- NUEVO MÉTODO AUXILIAR ---
+  forward_to_gemini_tab(text) {
+    chrome.tabs.query({ url: "https://gemini.google.com\/*" }, (tabs) => {
+      if (tabs && tabs.length > 0) {
+        const activeTab = tabs.find((t) => t.active) || tabs[0];
+        chrome.tabs.sendMessage(activeTab.id, {
+          type: MESSAGE_TYPES.SEND_GEMINI_PROMPT,
+          text: text,
+        });
+      } else {
+        Logger.warn("WebSocketManager", "No se encontró ninguna pestaña activa con Gemini.");
+      }
+    });
   }
 
   send(data) {
