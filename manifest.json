@@ -2,11 +2,12 @@
   "manifest_version": 3,
   "name": "Gemini Live Chat",
   "version": "1.4",
-  "description": "Captura la conversación en vivo de Gemini en una ventana emergente y la envía por WebSocket.",
+  "description": "Captura la conversaci\u00f3n en vivo de Gemini en una ventana emergente y la env\u00eda por WebSocket.",
   "permissions": [
     "storage",
     "activeTab",
-    "scripting"
+    "scripting",
+    "alarms"
   ],
   "host_permissions": [
     "https://gemini.google.com/*"
@@ -16,8 +17,12 @@
   },
   "content_scripts": [
     {
-      "matches": ["https://gemini.google.com/*"],
-      "js": ["content.js"]
+      "matches": [
+        "https://gemini.google.com/*"
+      ],
+      "js": [
+        "content.js"
+      ]
     }
   ],
   "action": {

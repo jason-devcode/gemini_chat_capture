@@ -831,6 +831,12 @@ class BackgroundApplication {
 
   async initialize() {
     this.register_listeners();
+chrome.alarms.create("keepAlive", { periodInMinutes: 0.5 });
+chrome.alarms.onAlarm.addListener((alarm) => {
+if (alarm.name === "keepAlive" && !this.ws_manager.get_status().connected) {
+this.ws_manager.connect();
+}
+});
 
     await Promise.all([
       this.ws_manager.initialize(),
