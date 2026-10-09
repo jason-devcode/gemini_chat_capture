@@ -87,9 +87,13 @@ function safeSendMessage(message) {
 function isGeminiGenerating(lastModelNode) {
   if (!lastModelNode) return false;
 
+  // 1. Verificar si existe un botón de "Detener" o "Stop" activo y visible
   const stopButton = document.querySelector('button[aria-label*="Stop"], button[aria-label*="Detener"], button[aria-label*="stop"]');
-  if (stopButton) return true;
+  if (stopButton && (stopButton.offsetWidth > 0 || stopButton.offsetHeight > 0)) {
+    return true;
+  }
 
+  // 2. Verificar si el nodo tiene atributos/clases explícitas de streaming
   if (
     lastModelNode.classList.contains("streaming") ||
     lastModelNode.classList.contains("generating") ||
@@ -98,8 +102,11 @@ function isGeminiGenerating(lastModelNode) {
     return true;
   }
 
-  const spinner = lastModelNode.querySelector('.mat-mdc-progress-spinner, [role="progressbar"], .sparkle-loader');
-  if (spinner) return true;
+  // 3. Verificar si hay spinners de carga activos y visibles
+  const spinner = lastModelNode.querySelector('.mat-mdc-progress-spinner, [role="progressbar"]');
+  if (spinner && (spinner.offsetWidth > 0 || spinner.offsetHeight > 0)) {
+    return true;
+  }
 
   return false;
 }
@@ -123,7 +130,7 @@ function checkAndProcessGeminiCompletion() {
     }
 
     const text = extractGeminiResponse(lastModelNode);
-    if (text && lastModelNode.dataset.wsSent !== "true") {
+    if (text && text.length > 0 && lastModelNode.dataset.wsSent !== "true") {
       lastModelNode.dataset.wsSent = "true";
 
       safeSendMessage({
