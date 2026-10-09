@@ -179,3 +179,30 @@ class Agent:
             )
 
         return result
+
+
+def extract_plain_text(text: str) -> str:
+    """Remueve bloques cmd{...} y code{...} dejando solo el texto conversacional."""
+    if not isinstance(text, str) or not text:
+        return ""
+    
+    cleaned_text = text
+    position = 0
+
+    while True:
+        match = BLOCK_PATTERN.search(cleaned_text, position)
+        if match is None:
+            break
+
+        opening_index = match.end() - 1
+        closing_index = find_matching_brace(cleaned_text, opening_index)
+
+        if closing_index is None:
+            break
+
+        # Remover el bloque detectado (code o cmd)
+        cleaned_text = cleaned_text[:match.start()] + cleaned_text[closing_index + 1:]
+        position = match.start()
+
+    return cleaned_text.strip()
+

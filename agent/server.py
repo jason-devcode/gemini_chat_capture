@@ -11,8 +11,7 @@ import aioconsole
 import websockets
 from websockets.exceptions import ConnectionClosed
 
-from agent import Agent, CommandParseResult
-
+from agent import Agent, CommandParseResult, extract_plain_text
 
 # ============================================================
 # CONFIGURACIÓN
@@ -177,11 +176,12 @@ class WebSocketServer:
         except Exception:
             logger.exception("Error procesando mensaje WebSocket.")
 
+
     async def handle_ai_response(
         self,
         data: dict[str, Any],
     ) -> None:
-        """Analiza una respuesta de la IA y registra su propuesta."""
+        """Analiza una respuesta de la IA, imprime el texto conversacional y gestiona propuestas."""
         text = data.get("text", "")
         sender = data.get("sender", "gemini")
         timestamp = data.get("timestamp")
@@ -202,6 +202,7 @@ class WebSocketServer:
             len(text),
         )
 
+        # Analizar el mensaje con el parser del agente
         result: CommandParseResult = self.agent.process_message(text)
 
         if result.error:
@@ -212,9 +213,19 @@ class WebSocketServer:
             })
             return
 
+        # Si NO se encontró un comando ejecutable, imprimimos solo el texto conversacional limpio
         if not result.found or not result.command:
+            plain_text = extract_plain_text(text)
+            if plain_text:
+                print(f"\n[IA ({sender})]: {plain_text}\n")
             return
 
+        # Si se encontró un comando, imprimimos primero el texto explicativo previo si existe
+        plain_text = extract_plain_text(text)
+        if plain_text:
+            print(f"\n[IA ({sender})]: {plain_text}")
+
+        # Solo si se encontró un comando, se crea y encola para solicitar aprobación en la CLI
         pending = PendingCommand(
             command=result.command,
             sender=sender,
