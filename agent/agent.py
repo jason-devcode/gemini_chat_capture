@@ -1,208 +1,141 @@
-"""Extracción segura de propuestas de comandos desde texto de IA."""
+"""Parser de bloques file_operation, cmd y code.
 
+IMPORTANTE: invoca estos parsers únicamente sobre texto generado por el modelo.
+Nunca vuelvas a parsear como instrucciones el resultado devuelto por file_tools.
+"""
+from __future__ import annotations
+
+import json
 import logging
 import re
 from dataclasses import dataclass
-
+from typing import Any
 
 logger = logging.getLogger("agent.parser")
-
-BLOCK_PATTERN = re.compile(r"\b(code|cmd)\s*\{", re.IGNORECASE)
-
-
-# ============================================================
-# MODELOS
-# ============================================================
+BLOCK_PATTERN = re.compile(r"\b(file_operation|code|cmd)\s*\{", re.IGNORECASE)
 
 @dataclass(frozen=True)
 class CommandParseResult:
-    """Resultado del análisis de un mensaje."""
-
     found: bool
     command: str | None = None
     error: str | None = None
 
+@dataclass(frozen=True)
+class FileOperationParseResult:
+    found: bool
+    operation: dict[str, Any] | None = None
+    error: str | None = None
 
-# ============================================================
-# PARSER
-# ============================================================
 
-def find_matching_brace(
-    text: str,
-    opening_index: int,
-) -> int | None:
-    """
-    Encuentra la llave de cierre correspondiente.
-
-    Respeta llaves anidadas, comillas simples, dobles,
-    comillas invertidas y escapes con barra invertida.
-
-    opening_index debe apuntar a la llave de apertura.
-    """
+def find_matching_brace(text: str, opening_index: int) -> int | None:
     depth = 0
     quote: str | None = None
     escaped = False
-
     for index in range(opening_index, len(text)):
         char = text[index]
-
         if escaped:
             escaped = False
             continue
-
         if char == "\\":
             escaped = True
             continue
-
         if quote is not None:
             if char == quote:
                 quote = None
             continue
-
-        if char in ("'", '"', "`"):
+        if char in ("'", '"', '`'):
             quote = char
             continue
-
         if char == "{":
             depth += 1
-
         elif char == "}":
             depth -= 1
-
             if depth == 0:
                 return index
-
     return None
 
 
-def parse_first_command(text: str) -> CommandParseResult:
-    """
-    Extrae como máximo el primer bloque cmd fuera de bloques code.
-
-    Esta función solamente analiza el texto. No ejecuta comandos
-    ni determina si son seguros.
-    """
-    if not isinstance(text, str) or not text:
-        return CommandParseResult(found=False)
-
+def _find_blocks(text: str):
+    """Itera bloques de primer nivel sin buscar dentro del cuerpo ya encontrado."""
     position = 0
-
     while True:
         match = BLOCK_PATTERN.search(text, position)
-
         if match is None:
-            return CommandParseResult(found=False)
+            return
+        kind = match.group(1).lower()
+        opening = match.end() - 1
+        closing = find_matching_brace(text, opening)
+        yield match, kind, opening, closing
+        if closing is None:
+            return
+        position = closing + 1
 
-        block_type = match.group(1).lower()
-        opening_index = match.end() - 1
 
-        closing_index = find_matching_brace(
-            text,
-            opening_index,
-        )
-
-        if closing_index is None:
-            if block_type == "cmd":
-                logger.warning(
-                    "Se encontró un bloque cmd sin cerrar."
-                )
-
-                return CommandParseResult(
-                    found=True,
-                    error="El bloque cmd no tiene una llave de cierre.",
-                )
-
-            # Un bloque code sin cerrar invalida el resto del mensaje
-            # para la extracción de comandos.
-            logger.warning(
-                "Se encontró un bloque code sin cerrar."
-            )
-
-            return CommandParseResult(found=False)
-
-        if block_type == "code":
-            # Saltar todo el contenido del bloque de código.
-            position = closing_index + 1
+def parse_first_file_operation(text: str) -> FileOperationParseResult:
+    """Extrae la primera operación JSON; no evalúa ni ejecuta contenido."""
+    if not isinstance(text, str) or not text:
+        return FileOperationParseResult(False)
+    for match, kind, opening, closing in _find_blocks(text):
+        if kind != "file_operation":
             continue
+        if closing is None:
+            return FileOperationParseResult(True, error="El bloque file_operation no tiene llave de cierre.")
+        raw = text[opening + 1:closing].strip()
+        try:
+            operation = json.loads("{" + raw + "}")
+        except json.JSONDecodeError as exc:
+            return FileOperationParseResult(True, error=f"JSON inválido en file_operation: {exc.msg} (columna {exc.colno}).")
+        if not isinstance(operation, dict):
+            return FileOperationParseResult(True, error="file_operation debe contener un objeto JSON.")
+        if not isinstance(operation.get("action"), str):
+            return FileOperationParseResult(True, error="La operación JSON debe incluir 'action' como cadena.")
+        return FileOperationParseResult(True, operation=operation)
+    return FileOperationParseResult(False)
 
-        command = text[opening_index + 1:closing_index].strip()
 
+def parse_first_command(text: str) -> CommandParseResult:
+    """Extrae el primer cmd fuera de bloques code/file_operation."""
+    if not isinstance(text, str) or not text:
+        return CommandParseResult(False)
+    for match, kind, opening, closing in _find_blocks(text):
+        if kind == "file_operation":
+            # La prioridad de file_operation la resuelve el servidor antes de llamar aquí.
+            continue
+        if kind == "code":
+            if closing is None:
+                return CommandParseResult(False)
+            continue
+        if closing is None:
+            return CommandParseResult(True, error="El bloque cmd no tiene una llave de cierre.")
+        command = text[opening + 1:closing].strip()
         if not command:
-            logger.warning("Se encontró un bloque cmd vacío.")
-
-            return CommandParseResult(
-                found=True,
-                error="El bloque cmd está vacío.",
-            )
-
-        logger.info(
-            "Propuesta de comando detectada | caracteres=%d",
-            len(command),
-        )
-
-        return CommandParseResult(
-            found=True,
-            command=command,
-        )
-
-
-# ============================================================
-# AGENTE
-# ============================================================
-
-class Agent:
-    """Analiza mensajes de IA y extrae propuestas de comandos."""
-
-    def process_message(self, text: str) -> CommandParseResult:
-        """
-        Analiza un mensaje y devuelve la primera propuesta válida.
-
-        No ejecuta comandos. La autorización corresponde al usuario
-        y debe gestionarse en el servidor.
-        """
-        result = parse_first_command(text)
-
-        if result.error:
-            logger.warning(
-                "No se pudo interpretar la propuesta: %s",
-                result.error,
-            )
-
-        elif result.found:
-            logger.info(
-                "Propuesta detectada; requiere autorización humana."
-            )
-
-        else:
-            logger.debug(
-                "No se detectaron propuestas de comandos."
-            )
-
-        return result
+            return CommandParseResult(True, error="El bloque cmd está vacío.")
+        return CommandParseResult(True, command=command)
+    return CommandParseResult(False)
 
 
 def extract_plain_text(text: str) -> str:
-    """Remueve bloques cmd{...} y code{...} dejando solo el texto conversacional."""
+    """Elimina bloques de protocolo del texto original generado por el modelo."""
     if not isinstance(text, str) or not text:
         return ""
-    
-    cleaned_text = text
+    pieces = []
     position = 0
-
-    while True:
-        match = BLOCK_PATTERN.search(cleaned_text, position)
-        if match is None:
+    for match, _kind, _opening, closing in _find_blocks(text):
+        pieces.append(text[position:match.start()])
+        if closing is None:
+            position = len(text)
             break
+        position = closing + 1
+    pieces.append(text[position:])
+    return " ".join(part.strip() for part in pieces if part.strip()).strip()
 
-        opening_index = match.end() - 1
-        closing_index = find_matching_brace(cleaned_text, opening_index)
 
-        if closing_index is None:
-            break
+class Agent:
+    def process_file_operation(self, text: str) -> FileOperationParseResult:
+        result = parse_first_file_operation(text)
+        if result.error:
+            logger.warning("No se pudo interpretar file_operation: %s", result.error)
+        return result
 
-        # Remover el bloque detectado (code o cmd)
-        cleaned_text = cleaned_text[:match.start()] + cleaned_text[closing_index + 1:]
-        position = match.start()
-
-    return cleaned_text.strip()
-
+    def process_message(self, text: str) -> CommandParseResult:
+        return parse_first_command(text)
