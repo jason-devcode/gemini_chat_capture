@@ -301,6 +301,12 @@ class WebSocketServer:
         try:
             res = self.file_tools.execute(operation)
             formatted = format_result(res)
+            
+            # Mostrar resultado de forma legible en la CLI local
+            print(f"\n[RESULTADO ARCHIVO ({operation.get('action', 'unknown')}):]")
+            print(formatted)
+            print()
+
             await self.broadcast({
                 "type": MESSAGE_FILE_OPERATION_RESULT,
                 "status": "success",
@@ -311,22 +317,32 @@ class WebSocketServer:
             logger.info("Operación de archivo '%s' ejecutada exitosamente.", operation.get("action"))
         except FileToolError as err:
             error_payload = {"ok": False, "error": str(err)}
+            formatted_error = format_result(error_payload)
+            
+            print(f"\n[ERROR ARCHIVO ({operation.get('action', 'unknown')}):]")
+            print(formatted_error)
+            print()
+
             await self.broadcast({
                 "type": MESSAGE_FILE_OPERATION_RESULT,
                 "status": "error",
                 "operation": operation,
-                "output": format_result(error_payload),
+                "output": formatted_error,
                 "timestamp": datetime.now(timezone.utc).isoformat(),
             })
             logger.warning("Error en operación de archivo '%s': %s", operation.get("action"), err)
         except Exception:
             logger.exception("Error inesperado ejecutando operación de archivo.")
             error_payload = {"ok": False, "error": "Error interno del servidor al ejecutar operación de archivo."}
+            formatted_error = format_result(error_payload)
+            
+            print(f"\n[ERROR INTERNO ARCHIVO]:\n{formatted_error}\n")
+
             await self.broadcast({
                 "type": MESSAGE_FILE_OPERATION_RESULT,
                 "status": "error",
                 "operation": operation,
-                "output": format_result(error_payload),
+                "output": formatted_error,
                 "timestamp": datetime.now(timezone.utc).isoformat(),
             })
 
@@ -527,11 +543,17 @@ async def process_pending_file_operation(
         await server.execute_and_publish_file_operation(pending.operation)
     else:
         rejection_payload = {"ok": False, "error": "Operación de archivo rechazada por el usuario."}
+        formatted_rejection = format_result(rejection_payload)
+        
+        print("\n[OPERACIÓN DE ARCHIVO RECHAZADA]")
+        print(formatted_rejection)
+        print()
+
         await server.broadcast({
             "type": MESSAGE_FILE_OPERATION_RESULT,
             "status": "rejected",
             "operation": pending.operation,
-            "output": format_result(rejection_payload),
+            "output": formatted_rejection,
             "timestamp": datetime.now(timezone.utc).isoformat(),
         })
         print("Operación de archivo rechazada. No se modificó el sistema.")
