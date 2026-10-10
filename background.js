@@ -25,18 +25,16 @@ const MESSAGE_TYPES = Object.freeze({
   UPDATE_WS_CONFIG: "UPDATE_WS_CONFIG",
   WS_STATUS_CHANGE: "WS_STATUS_CHANGE",
   POPUP_STREAM_CHAT: "POPUP_STREAM_CHAT",
-  CLI_PROMPT: "CLI_PROMPT",             // <- NUEVO
-  COMMAND_RESULT: "COMMAND_RESULT",     // <- NUEVO
-  SEND_GEMINI_PROMPT: "SEND_GEMINI_PROMPT", // <- NUEVO
+  CLI_PROMPT: "CLI_PROMPT",
+  COMMAND_RESULT: "COMMAND_RESULT",
+  FILE_OPERATION_RESULT: "FILE_OPERATION_RESULT",       // <- AÑADIDO
+  SEND_GEMINI_PROMPT: "SEND_GEMINI_PROMPT",
 });
 
 /**
  * ============================================================
  * LOGGER
  * ============================================================
- *
- * Centraliza los logs y evita registrar el contenido completo
- * de los mensajes intercambiados con el servidor.
  */
 
 class Logger {
@@ -44,24 +42,17 @@ class Logger {
     const timestamp = new Date().toISOString();
     const prefix = `[${timestamp}] [${level}] [${component}]`;
 
-    if (details !== null) {
-      const method =
-        level === "ERROR"
-          ? console.error
-          : level === "WARN"
-            ? console.warn
-            : console.log;
-
-      method(`${prefix} ${message}`, details);
-      return;
-    }
-
     const method =
       level === "ERROR"
         ? console.error
         : level === "WARN"
           ? console.warn
           : console.log;
+
+    if (details !== null) {
+      method(`${prefix} ${message}`, details);
+      return;
+    }
 
     method(`${prefix} ${message}`);
   }
@@ -95,8 +86,6 @@ class Logger {
  * ============================================================
  * STORAGE SERVICE
  * ============================================================
- *
- * Responsabilidad: leer y persistir configuración e historial.
  */
 
 class StorageService {
@@ -155,9 +144,6 @@ class StorageService {
  * ============================================================
  * MESSAGE SERVICE
  * ============================================================
- *
- * Responsabilidad: comunicar el background con otros contextos
- * de la extensión.
  */
 
 class MessageService {
@@ -165,7 +151,6 @@ class MessageService {
     try {
       await chrome.runtime.sendMessage(message);
     } catch (error) {
-      // Puede no existir ningún receptor activo.
       Logger.debug("MessageService", "No se pudo entregar el mensaje.", {
         type: message.type,
         reason: error.message,
@@ -190,8 +175,6 @@ class MessageService {
  * ============================================================
  * WEBSOCKET MANAGER
  * ============================================================
- *
- * Responsabilidad: conexión, envío, reconexión y estado WS.
  */
 
 class WebSocketManager {
@@ -254,8 +237,6 @@ class WebSocketManager {
   normalize_host(host) {
     const normalized_host = String(host || "").trim();
 
-    // 0.0.0.0 es una dirección de escucha, no el destino
-    // que normalmente debe utilizar un cliente local.
     if (!normalized_host || normalized_host === "0.0.0.0") {
       return DEFAULT_WS_HOST;
     }
@@ -282,7 +263,6 @@ class WebSocketManager {
     const normalized_host = this.normalize_host(host);
     const normalized_port = this.normalize_port(port);
 
-    // Persistir antes de reemplazar la configuración activa.
     await StorageService.save_ws_config(
       normalized_host,
       normalized_port
@@ -299,12 +279,10 @@ class WebSocketManager {
     this.is_stopped = false;
     this.clear_reconnect_timer();
 
-    // Invalidar todos los eventos pendientes de sockets anteriores.
     this.connection_generation += 1;
     const generation = this.connection_generation;
 
     this.close_socket();
-
     this.is_connected = false;
 
     const ws_url = this.get_url();
@@ -347,7 +325,6 @@ class WebSocketManager {
         data_type: typeof event.data,
       });
 
-      // --- NUEVO: Procesamiento de mensajes entrantes del servidor ---
       try {
         const data = JSON.parse(event.data);
 
@@ -361,19 +338,24 @@ class WebSocketManager {
           const formattedText = `[Resultado del Comando: ${data.command}]\nEstado: ${data.status}\nSalida:\n${data.output}`;
           this.forward_to_gemini_tab(formattedText);
         }
+
+        // 3. Manejo de Resultados de Operaciones de Ficheros (CORRECCIÓN)
+        if (data.type === MESSAGE_TYPES.FILE_OPERATION_RESULT) {
+          const actionName = data.operation?.action || "desconocida";
+          const formattedText = `[Resultado de Herramienta de Archivo: ${actionName}]\nEstado: ${data.status}\nSalida:\n${data.output}`;
+          this.forward_to_gemini_tab(formattedText);
+        }
       } catch (err) {
         Logger.error("WebSocketManager", "Error parseando mensaje entrante del servidor", err);
       }
     });
-
 
     socket.addEventListener("error", () => {
       if (!this.is_current_socket(socket, generation)) {
         return;
       }
 
-      this.last_error =
-        `Error de conexión WebSocket con ${ws_url}.`;
+      this.last_error = `Error de conexión WebSocket con ${ws_url}.`;
 
       Logger.warn("WebSocketManager", this.last_error);
       this.notify_status();
@@ -387,8 +369,7 @@ class WebSocketManager {
       this.is_connected = false;
 
       if (!this.last_error) {
-        this.last_error =
-          `Conexión cerrada con ${ws_url} (código ${event.code}).`;
+        this.last_error = `Conexión cerrada con ${ws_url} (código ${event.code}).`;
       }
 
       Logger.warn("WebSocketManager", "Conexión cerrada.", {
@@ -411,8 +392,7 @@ class WebSocketManager {
 
   handle_connection_error(error) {
     this.is_connected = false;
-    this.last_error =
-      `No se pudo crear la conexión WebSocket: ${error.message}`;
+    this.last_error = `No se pudo crear la conexión WebSocket: ${error.message}`;
 
     Logger.error(
       "WebSocketManager",
@@ -424,7 +404,6 @@ class WebSocketManager {
     this.schedule_reconnect();
   }
 
-  // --- NUEVO MÉTODO AUXILIAR ---
   forward_to_gemini_tab(text) {
     chrome.tabs.query({ url: "https://gemini.google.com\/*" }, (tabs) => {
       if (tabs && tabs.length > 0) {
@@ -513,8 +492,6 @@ class WebSocketManager {
 
   close_socket() {
     const socket = this.socket;
-
-    // Desvincular primero el socket para invalidar sus eventos.
     this.socket = null;
     this.is_connected = false;
 
@@ -553,8 +530,6 @@ class WebSocketManager {
   stop() {
     this.is_stopped = true;
     this.clear_reconnect_timer();
-
-    // Invalidar cualquier callback pendiente.
     this.connection_generation += 1;
     this.close_socket();
 
@@ -566,8 +541,6 @@ class WebSocketManager {
  * ============================================================
  * CHAT HISTORY SERVICE
  * ============================================================
- *
- * Responsabilidad: actualizar y distribuir el historial del chat.
  */
 
 class ChatHistoryService {
@@ -601,7 +574,6 @@ class ChatHistoryService {
     }
 
     this.history = history;
-
     await StorageService.save_chat_history(this.history);
 
     await MessageService.send({
@@ -619,8 +591,6 @@ class ChatHistoryService {
  * ============================================================
  * CHAT WINDOW MANAGER
  * ============================================================
- *
- * Responsabilidad: crear, enfocar y rastrear la ventana del chat.
  */
 
 class ChatWindowManager {
@@ -635,7 +605,6 @@ class ChatWindowManager {
         await chrome.windows.update(this.window_id, {
           focused: true,
         });
-
         return;
       } catch (error) {
         Logger.warn(
@@ -643,7 +612,6 @@ class ChatWindowManager {
           "No se pudo enfocar la ventana existente.",
           { message: error.message }
         );
-
         this.window_id = null;
       }
     }
@@ -687,11 +655,7 @@ class ChatWindowManager {
   handle_window_removed(closed_window_id) {
     if (closed_window_id === this.window_id) {
       this.window_id = null;
-
-      Logger.debug(
-        "ChatWindowManager",
-        "Ventana del chat cerrada."
-      );
+      Logger.debug("ChatWindowManager", "Ventana del chat cerrada.");
     }
   }
 }
@@ -700,9 +664,6 @@ class ChatWindowManager {
  * ============================================================
  * MESSAGE ROUTER
  * ============================================================
- *
- * Responsabilidad: dirigir cada tipo de mensaje al servicio
- * encargado de procesarlo.
  */
 
 class MessageRouter {
@@ -735,11 +696,9 @@ class MessageRouter {
 
       case MESSAGE_TYPES.RECONNECT_WS:
         this.ws_manager.reconnect();
-
         MessageService.send_response(send_response, {
           status: "connecting",
         });
-
         return false;
 
       case MESSAGE_TYPES.UPDATE_WS_CONFIG:
@@ -749,7 +708,6 @@ class MessageRouter {
         Logger.debug("MessageRouter", "Tipo de mensaje ignorado.", {
           type: message.type,
         });
-
         return false;
     }
   }
@@ -803,8 +761,6 @@ class MessageRouter {
     };
 
     void update();
-
-    // Mantener abierto el canal para la respuesta asíncrona.
     return true;
   }
 }
@@ -813,8 +769,6 @@ class MessageRouter {
  * ============================================================
  * APPLICATION
  * ============================================================
- *
- * Responsabilidad: ensamblar los servicios e instalar listeners.
  */
 
 class BackgroundApplication {
@@ -831,12 +785,13 @@ class BackgroundApplication {
 
   async initialize() {
     this.register_listeners();
-chrome.alarms.create("keepAlive", { periodInMinutes: 0.5 });
-chrome.alarms.onAlarm.addListener((alarm) => {
-if (alarm.name === "keepAlive" && !this.ws_manager.get_status().connected) {
-this.ws_manager.connect();
-}
-});
+
+    chrome.alarms.create("keepAlive", { periodInMinutes: 0.5 });
+    chrome.alarms.onAlarm.addListener((alarm) => {
+      if (alarm.name === "keepAlive" && !this.ws_manager.get_status().connected) {
+        this.ws_manager.connect();
+      }
+    });
 
     await Promise.all([
       this.ws_manager.initialize(),

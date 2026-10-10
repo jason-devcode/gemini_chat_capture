@@ -87,13 +87,11 @@ function safeSendMessage(message) {
 function isGeminiGenerating(lastModelNode) {
   if (!lastModelNode) return false;
 
-  // 1. Verificar si existe un botón de "Detener" o "Stop" activo y visible
   const stopButton = document.querySelector('button[aria-label*="Stop"], button[aria-label*="Detener"], button[aria-label*="stop"]');
   if (stopButton && (stopButton.offsetWidth > 0 || stopButton.offsetHeight > 0)) {
     return true;
   }
 
-  // 2. Verificar si el nodo tiene atributos/clases explícitas de streaming
   if (
     lastModelNode.classList.contains("streaming") ||
     lastModelNode.classList.contains("generating") ||
@@ -102,7 +100,6 @@ function isGeminiGenerating(lastModelNode) {
     return true;
   }
 
-  // 3. Verificar si hay spinners de carga activos y visibles
   const spinner = lastModelNode.querySelector('.mat-mdc-progress-spinner, [role="progressbar"]');
   if (spinner && (spinner.offsetWidth > 0 || spinner.offsetHeight > 0)) {
     return true;
@@ -143,7 +140,6 @@ function checkAndProcessGeminiCompletion() {
   }, STREAM_TIMEOUT_MS);
 }
 
-// Inyección del prompt en el editor de Gemini (modificado para soportar multilínea y comandos)
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message.type === "SEND_GEMINI_PROMPT" && message.text) {
     const inputArea = document.querySelector('.ql-editor, rich-textarea div[contenteditable="true"], div[contenteditable="true"], textarea');
@@ -154,7 +150,6 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       if (inputArea.tagName.toLowerCase() === 'textarea') {
         inputArea.value = message.text;
       } else {
-        // Formatear saltos de línea para elementos contenteditable[cite: 3]
         const formattedHTML = message.text.replace(/\n/g, '<br>');
         inputArea.innerHTML = `<p>${formattedHTML}</p>`;
       }
