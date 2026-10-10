@@ -5,13 +5,15 @@ import json
 import logging
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any
 
 import aioconsole
 import websockets
 from websockets.exceptions import ConnectionClosed
 
-from agent import Agent, CommandParseResult, extract_plain_text
+from agent import Agent, CommandParseResult, FileOperationParseResult, extract_plain_text
+from file_tools import FileToolError, FileTools, format_result, is_mutating_action
 
 # ============================================================
 # CONFIGURACIÓN
@@ -25,6 +27,7 @@ MAX_OUTPUT_CHARS = 50_000
 MESSAGE_FINAL_RESPONSE = "GEMINI_FINAL_RESPONSE"
 MESSAGE_COMMAND_PROPOSAL = "COMMAND_PROPOSAL"
 MESSAGE_COMMAND_RESULT = "COMMAND_RESULT"
+MESSAGE_FILE_OPERATION_RESULT = "FILE_OPERATION_RESULT"
 MESSAGE_CLI_PROMPT = "CLI_PROMPT"
 MESSAGE_SERVER_STATUS = "SERVER_STATUS"
 
@@ -55,6 +58,15 @@ class PendingCommand:
     timestamp: str
 
 
+@dataclass(frozen=True)
+class PendingFileOperation:
+    """Operación mutadora de archivos pendiente de aprobación humana."""
+
+    operation: dict[str, Any]
+    sender: str
+    timestamp: str
+
+
 # ============================================================
 # SERVIDOR WEBSOCKET
 # ============================================================
@@ -62,10 +74,12 @@ class PendingCommand:
 class WebSocketServer:
     """Administra conexiones y distribuye mensajes a los clientes."""
 
-    def __init__(self, agent: Agent) -> None:
+    def __init__(self, agent: Agent, file_tools: FileTools) -> None:
         self.agent = agent
+        self.file_tools = file_tools
         self.clients: set[Any] = set()
         self.pending_commands: asyncio.Queue[PendingCommand] = asyncio.Queue()
+        self.pending_file_ops: asyncio.Queue[PendingFileOperation] = asyncio.Queue()
         self.broadcast_lock = asyncio.Lock()
         self.command_lock = asyncio.Lock()
         self.stopping = False
@@ -176,12 +190,11 @@ class WebSocketServer:
         except Exception:
             logger.exception("Error procesando mensaje WebSocket.")
 
-
     async def handle_ai_response(
         self,
         data: dict[str, Any],
     ) -> None:
-        """Analiza una respuesta de la IA, imprime el texto conversacional y gestiona propuestas."""
+        """Analiza una respuesta de la IA, priorizando file_operation sobre cmd."""
         text = data.get("text", "")
         sender = data.get("sender", "gemini")
         timestamp = data.get("timestamp")
@@ -202,32 +215,65 @@ class WebSocketServer:
             len(text),
         )
 
-        # Analizar el mensaje con el parser del agente
-        result: CommandParseResult = self.agent.process_message(text)
+        # 1. Analizar si existe una operación de archivos (file_operation tiene prioridad)
+        file_op_result: FileOperationParseResult = self.agent.process_file_operation(text)
 
-        if result.error:
+        if file_op_result.error:
             await self.broadcast({
-                "type": MESSAGE_COMMAND_RESULT,
+                "type": MESSAGE_FILE_OPERATION_RESULT,
                 "status": "parse_error",
-                "message": result.error,
+                "message": file_op_result.error,
             })
             return
 
-        # Si NO se encontró un comando ejecutable, imprimimos solo el texto conversacional limpio
-        if not result.found or not result.command:
+        if file_op_result.found and file_op_result.operation:
+            plain_text = extract_plain_text(text)
+            if plain_text:
+                print(f"\n[IA ({sender})]: {plain_text}")
+
+            op = file_op_result.operation
+            action = op.get("action", "")
+
+            # Si la acción es mutadora, requiere aprobación por CLI
+            if is_mutating_action(action):
+                pending_op = PendingFileOperation(
+                    operation=op,
+                    sender=sender,
+                    timestamp=timestamp,
+                )
+                await self.pending_file_ops.put(pending_op)
+                logger.info(
+                    "Operación mutadora de archivo '%s' en espera de autorización local.",
+                    action
+                )
+            else:
+                # Si es de lectura, se ejecuta inmediatamente
+                await self.execute_and_publish_file_operation(op)
+            return
+
+        # 2. Si no es file_operation, evaluar si existe un comando de terminal (cmd)
+        cmd_result: CommandParseResult = self.agent.process_message(text)
+
+        if cmd_result.error:
+            await self.broadcast({
+                "type": MESSAGE_COMMAND_RESULT,
+                "status": "parse_error",
+                "message": cmd_result.error,
+            })
+            return
+
+        if not cmd_result.found or not cmd_result.command:
             plain_text = extract_plain_text(text)
             if plain_text:
                 print(f"\n[IA ({sender})]: {plain_text}\n")
             return
 
-        # Si se encontró un comando, imprimimos primero el texto explicativo previo si existe
         plain_text = extract_plain_text(text)
         if plain_text:
             print(f"\n[IA ({sender})]: {plain_text}")
 
-        # Solo si se encontró un comando, se crea y encola para solicitar aprobación en la CLI
         pending = PendingCommand(
-            command=result.command,
+            command=cmd_result.command,
             sender=sender,
             timestamp=timestamp,
         )
@@ -246,6 +292,43 @@ class WebSocketServer:
             "Comando en espera de autorización local; no se ejecutará "
             "hasta recibir aprobación explícita."
         )
+
+    async def execute_and_publish_file_operation(
+        self,
+        operation: dict[str, Any]
+    ) -> None:
+        """Ejecuta una operación de archivo con FileTools y transmite el resultado."""
+        try:
+            res = self.file_tools.execute(operation)
+            formatted = format_result(res)
+            await self.broadcast({
+                "type": MESSAGE_FILE_OPERATION_RESULT,
+                "status": "success",
+                "operation": operation,
+                "output": formatted,
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+            })
+            logger.info("Operación de archivo '%s' ejecutada exitosamente.", operation.get("action"))
+        except FileToolError as err:
+            error_payload = {"ok": False, "error": str(err)}
+            await self.broadcast({
+                "type": MESSAGE_FILE_OPERATION_RESULT,
+                "status": "error",
+                "operation": operation,
+                "output": format_result(error_payload),
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+            })
+            logger.warning("Error en operación de archivo '%s': %s", operation.get("action"), err)
+        except Exception:
+            logger.exception("Error inesperado ejecutando operación de archivo.")
+            error_payload = {"ok": False, "error": "Error interno del servidor al ejecutar operación de archivo."}
+            await self.broadcast({
+                "type": MESSAGE_FILE_OPERATION_RESULT,
+                "status": "error",
+                "operation": operation,
+                "output": format_result(error_payload),
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+            })
 
     async def publish_command_result(
         self,
@@ -299,13 +382,7 @@ class WebSocketServer:
 # ============================================================
 
 async def execute_authorized_command(command: str) -> tuple[int, str]:
-    """
-    Ejecuta un comando después de la aprobación explícita en la CLI.
-
-    Se utiliza una shell para respetar el formato de comandos
-    propuesto. Por eso esta función solo debe invocarse después
-    de una aprobación humana consciente.
-    """
+    """Ejecuta un comando después de la aprobación explícita en la CLI."""
     process = await asyncio.create_subprocess_shell(
         command,
         stdout=asyncio.subprocess.PIPE,
@@ -353,7 +430,7 @@ async def process_pending_command(
     server: WebSocketServer,
     pending: PendingCommand,
 ) -> None:
-    """Solicita aprobación, rechazo o una alternativa libre."""
+    """Solicita aprobación, rechazo o una alternativa libre para un comando cmd."""
     print("\n" + "=" * 72)
     print("PROPUESTA DE COMANDO")
     print("=" * 72)
@@ -403,10 +480,7 @@ async def process_pending_command(
         )
 
         if alternative.strip():
-            # El texto se distribuye como una instrucción libre,
-            # nunca como una autorización para ejecutar un comando.
             await server.publish_cli_prompt(alternative)
-
             print("Alternativa enviada a los clientes conectados.")
         else:
             print("Alternativa vacía; no se envió nada.")
@@ -430,13 +504,43 @@ async def process_pending_command(
     print()
 
 
-async def cli_loop(server: WebSocketServer) -> None:
-    """
-    Permite escribir prompts libremente y atender propuestas pendientes.
+async def process_pending_file_operation(
+    server: WebSocketServer,
+    pending: PendingFileOperation,
+) -> None:
+    """Solicita aprobación o rechazo para una operación mutadora de archivos."""
+    print("\n" + "=" * 72)
+    print("PROPUESTA DE MODIFICACIÓN DE ARCHIVO")
+    print("=" * 72)
+    print(json.dumps(pending.operation, ensure_ascii=False, indent=2))
+    print("=" * 72)
+    print("y = autorizar y aplicar cambios")
+    print("n = rechazar")
+    print()
 
-    Durante la espera de entrada, la llegada de un comando pendiente
-    interrumpe la espera para solicitar autorización.
-    """
+    choice = (
+        await request_cli_input("Decisión [y/n]: ")
+    ).strip().lower()
+
+    if choice == "y":
+        print("\nAplicando modificación autorizada...\n")
+        await server.execute_and_publish_file_operation(pending.operation)
+    else:
+        rejection_payload = {"ok": False, "error": "Operación de archivo rechazada por el usuario."}
+        await server.broadcast({
+            "type": MESSAGE_FILE_OPERATION_RESULT,
+            "status": "rejected",
+            "operation": pending.operation,
+            "output": format_result(rejection_payload),
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+        })
+        print("Operación de archivo rechazada. No se modificó el sistema.")
+
+    print()
+
+
+async def cli_loop(server: WebSocketServer) -> None:
+    """Permite escribir prompts libremente y atender propuestas pendientes."""
     print("\nCLI del agente")
     print("Escribe texto para enviarlo a los clientes.")
     print("Escribe /salir para cerrar el servidor.\n")
@@ -445,33 +549,44 @@ async def cli_loop(server: WebSocketServer) -> None:
         input_task = asyncio.create_task(
             request_cli_input("agent> ")
         )
-        pending_task = asyncio.create_task(
+        pending_cmd_task = asyncio.create_task(
             server.pending_commands.get()
+        )
+        pending_file_task = asyncio.create_task(
+            server.pending_file_ops.get()
         )
 
         done, waiting = await asyncio.wait(
-            {input_task, pending_task},
+            {input_task, pending_cmd_task, pending_file_task},
             return_when=asyncio.FIRST_COMPLETED,
         )
 
-        if pending_task in done:
-            pending = pending_task.result()
+        if pending_cmd_task in done:
+            pending_cmd = pending_cmd_task.result()
 
-            if not input_task.done():
-                input_task.cancel()
-                await asyncio.gather(
-                    input_task,
-                    return_exceptions=True,
-                )
+            for task in (input_task, pending_file_task):
+                if not task.done():
+                    task.cancel()
+                    await asyncio.gather(task, return_exceptions=True)
 
-            await process_pending_command(server, pending)
+            await process_pending_command(server, pending_cmd)
             continue
 
-        pending_task.cancel()
-        await asyncio.gather(
-            pending_task,
-            return_exceptions=True,
-        )
+        if pending_file_task in done:
+            pending_file = pending_file_task.result()
+
+            for task in (input_task, pending_cmd_task):
+                if not task.done():
+                    task.cancel()
+                    await asyncio.gather(task, return_exceptions=True)
+
+            await process_pending_file_operation(server, pending_file)
+            continue
+
+        # Cancelar tareas pendientes no completadas
+        for task in (pending_cmd_task, pending_file_task):
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
 
         try:
             text = input_task.result()
@@ -497,7 +612,11 @@ async def cli_loop(server: WebSocketServer) -> None:
 async def main() -> None:
     configure_logging()
 
-    server = WebSocketServer(agent=Agent())
+    root_path = Path(".").resolve()
+    file_tools = FileTools(root=root_path)
+    agent = Agent()
+
+    server = WebSocketServer(agent=agent, file_tools=file_tools)
 
     server_task = asyncio.create_task(server.start())
 
